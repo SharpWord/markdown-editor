@@ -4,10 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Markdown 编辑器</title>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" id="hljs-light">
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" id="hljs-dark" disabled>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.1/marked.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='14' font-size='14'%3E%F0%9F%93%9D%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="vendor/github.min.css" id="hljs-light">
+<link rel="stylesheet" href="vendor/github-dark.min.css" id="hljs-dark" disabled>
+<script src="vendor/marked.min.js"></script>
+<script src="vendor/highlight.min.js"></script>
+<script src="vendor/mermaid.min.js"></script>
 <style>
 :root {
   --bg: #ffffff;
@@ -158,6 +160,17 @@ body {
   user-select: none;
 }
 .line-numbers div { padding-right: 10px; }
+
+/* 未保存标记 */
+.dirty-dot {
+  display: inline-block;
+  margin-left: 2px;
+  color: var(--btn-primary);
+  font-size: 13px;
+  line-height: 1;
+  vertical-align: middle;
+}
+.dirty-dot[hidden] { display: none; }
 #editor {
   flex: 1;
   border: none; outline: none; resize: none;
@@ -241,6 +254,12 @@ body {
 .preview-content ul, .preview-content ol { padding-left: 24px; margin: 8px 0; }
 .preview-content li { margin: 4px 0; }
 .preview-content hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
+.preview-content .mermaid {
+  margin: 16px 0;
+  text-align: center;
+  overflow-x: auto;
+}
+.preview-content .mermaid svg { max-width: 100%; height: auto; }
 
 /* 语法速查侧边栏 */
 .sidebar {
@@ -409,6 +428,7 @@ body.reading-mode .divider-btn {
 <!-- 工具栏 -->
 <div class="toolbar">
   <div class="group">
+    <button onclick="newFile()" data-tooltip="新建 (Ctrl+N)" title="新建空白文档">📄</button>
     <button onclick="uploadFile()" data-tooltip="打开文件" title="打开本地 .md 文件">📂</button>
     <button onclick="exportFile()" data-tooltip="导出文件" title="导出为 .md 文件">💾</button>
   </div>
@@ -454,7 +474,7 @@ body.reading-mode .divider-btn {
   <button class="divider-btn" id="dividerBtn" onclick="toggleReadingMode()" title="进入阅读模式">👁</button>
   <div class="editor-panel">
     <div class="panel-header">
-      <span>✏️ 编辑器</span>
+      <span>✏️ 编辑器 <span id="dirtyDot" class="dirty-dot" hidden title="有未保存的修改">●</span></span>
       <span id="word-count">字数: 0</span>
     </div>
     <div class="editor-wrapper" id="editorWrapper"
@@ -471,7 +491,7 @@ body.reading-mode .divider-btn {
             拖拽 <b>.md</b> 文件到此处打开<br>
             或直接在左侧开始编写
           </div>
-          <div class="shortcuts">💡 右侧按钮「📖」打开语法速查 · Ctrl+S 导出文件</div>
+          <div class="shortcuts">💡 右侧按钮「📖」打开语法速查 · Ctrl+N 新建 · Ctrl+S 导出文件</div>
         </div>
       </div>
     </div>
@@ -482,7 +502,7 @@ body.reading-mode .divider-btn {
       <span>👁 实时预览</span>
       <span id="preview-label">Markdown 渲染</span>
     </div>
-    <div class="preview-content" id="preview"></div>
+    <div class="preview-content" id="preview" onscroll="syncPreviewScroll()"></div>
   </div>
 </div>
 
@@ -538,14 +558,19 @@ body.reading-mode .divider-btn {
 // === 初始化 ===
 marked.setOptions({
   gfm: true,
-  breaks: true,
-  highlight: function(code, lang) {
-    if (lang && hljs.getLanguage(lang)) {
-      return hljs.highlight(code, { language: lang }).value;
-    }
-    return hljs.highlightAuto(code).value;
-  }
+  breaks: true
 });
+
+// === Mermaid 初始化 ===
+function initMermaid() {
+  mermaid.initialize({
+    startOnLoad: false,
+    securityLevel: 'strict',
+    theme: document.body.classList.contains('dark') ? 'dark' : 'default',
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
+  });
+}
+initMermaid();
 
 const editor = document.getElementById('editor');
 const preview = document.getElementById('preview');
@@ -554,6 +579,59 @@ const guideOverlay = document.getElementById('guideOverlay');
 const fileInput = document.getElementById('fileInput');
 const toast = document.getElementById('toast');
 const wordCount = document.getElementById('word-count');
+const dirtyDot = document.getElementById('dirtyDot');
+const BASE_TITLE = 'Markdown 编辑器';
+
+// 最近一次保存（导出/打开/新建）时的内容，用于判断是否有未保存修改
+let lastSavedContent = '';
+
+function isDirty() {
+  return editor.value !== lastSavedContent;
+}
+
+function setDirty(dirty) {
+  dirtyDot.hidden = !dirty;
+  document.title = (dirty ? '● ' : '') + BASE_TITLE;
+}
+
+function markSaved() {
+  lastSavedContent = editor.value;
+  setDirty(false);
+}
+
+function confirmDiscard() {
+  return !isDirty() || confirm('当前文档有未保存的修改，确定要放弃吗？');
+}
+
+// 白名单外的事件属性 / 危险协议清理，防止渲染用户输入里的 HTML 脚本
+const DANGEROUS_TAGS = new Set([
+  'SCRIPT', 'IFRAME', 'FRAME', 'FRAMESET', 'OBJECT', 'EMBED',
+  'FORM', 'INPUT', 'BUTTON', 'TEXTAREA', 'SELECT', 'STYLE', 'LINK', 'META', 'BASE'
+]);
+
+function sanitizeHtml(html) {
+  const tpl = document.createElement('template');
+  tpl.innerHTML = html;
+  tpl.content.querySelectorAll('*').forEach(el => {
+    if (DANGEROUS_TAGS.has(el.tagName)) {
+      el.remove();
+      return;
+    }
+    [...el.attributes].forEach(attr => {
+      const name = attr.name.toLowerCase();
+      const value = attr.value.replace(/[\s\u0000-\u001f]/g, '').toLowerCase();
+      if (name.startsWith('on')) {
+        el.removeAttribute(attr.name);
+      } else if (
+        (name === 'href' || name === 'src' || name === 'xlink:href' || name === 'action' || name === 'formaction') &&
+        (/^(javascript|vbscript):/.test(value) || /^data:text\/html/.test(value))
+      ) {
+        el.removeAttribute(attr.name);
+      }
+    });
+  });
+  return tpl.innerHTML;
+}
 
 // 加载示例内容作为初始引导
 const sampleContent = `# 欢迎使用 Markdown 编辑器
@@ -607,14 +685,14 @@ function updateLineNumbers() {
 
 function updatePreview() {
   const md = editor.value;
-  preview.innerHTML = marked.parse(md);
-  // highlight.js 需要手动处理（marked 的 highlight 回调已处理大部分，但动态内容有时需要补刀）
+  preview.innerHTML = sanitizeHtml(marked.parse(md));
+  // 渲染后统一做代码高亮（mermaid 代码块单独交给图表渲染）
   preview.querySelectorAll('pre code').forEach(block => {
-    if (!block.dataset.highlighted) {
+    if (!block.classList.contains('language-mermaid')) {
       hljs.highlightElement(block);
-      block.dataset.highlighted = '1';
     }
   });
+  renderMermaidBlocks();
   updateLineNumbers();
   updateWordCount();
   // 引导层
@@ -625,6 +703,30 @@ function updatePreview() {
   }
   // 保存到 localStorage
   try { localStorage.setItem('md-editor-content', md); } catch(e) {}
+  setDirty(isDirty());
+}
+
+// 把 ```mermaid 代码块替换为图表；防抖 + 序号避免快速输入时的过期渲染
+let mermaidTimer = null;
+let mermaidSeq = 0;
+
+function renderMermaidBlocks() {
+  if (typeof mermaid === 'undefined') return;
+  const codes = [...preview.querySelectorAll('pre > code.language-mermaid')];
+  if (!codes.length) return;
+  const nodes = codes.map(code => {
+    const holder = document.createElement('div');
+    holder.className = 'mermaid';
+    holder.textContent = code.textContent;
+    code.parentElement.replaceWith(holder);
+    return holder;
+  });
+  const seq = ++mermaidSeq;
+  clearTimeout(mermaidTimer);
+  mermaidTimer = setTimeout(() => {
+    if (seq !== mermaidSeq) return;
+    mermaid.run({ nodes, suppressErrors: true }).catch(() => {});
+  }, 200);
 }
 
 function updateWordCount() {
@@ -637,9 +739,30 @@ function onEditorInput() {
   updatePreview();
 }
 
+// 双向滚动同步，加锁避免互相触发形成抖动
+let scrollSource = null;
+let scrollUnlockTimer = null;
+
+function lockScroll(source) {
+  scrollSource = source;
+  clearTimeout(scrollUnlockTimer);
+  scrollUnlockTimer = setTimeout(() => { scrollSource = null; }, 80);
+}
+
 function syncScroll() {
-  const ratio = editor.scrollTop / (editor.scrollHeight - editor.clientHeight || 1);
-  preview.scrollTop = ratio * (preview.scrollHeight - preview.clientHeight);
+  lineNumbers.scrollTop = editor.scrollTop;
+  if (scrollSource === 'preview') return;
+  lockScroll('editor');
+  const ratio = editor.scrollTop / Math.max(1, editor.scrollHeight - editor.clientHeight);
+  preview.scrollTop = ratio * Math.max(0, preview.scrollHeight - preview.clientHeight);
+}
+
+function syncPreviewScroll() {
+  if (scrollSource === 'editor') return;
+  if (document.body.classList.contains('reading-mode')) return;
+  lockScroll('preview');
+  const ratio = preview.scrollTop / Math.max(1, preview.scrollHeight - preview.clientHeight);
+  editor.scrollTop = ratio * Math.max(0, editor.scrollHeight - editor.clientHeight);
 }
 
 function handleTab(e) {
@@ -709,20 +832,31 @@ function insertTable() {
 }
 
 // === 文件操作 ===
+function newFile() {
+  if (!confirmDiscard()) return;
+  editor.value = '';
+  markSaved();
+  updatePreview();
+  editor.focus();
+  showToast('已新建空白文档');
+}
+
 function uploadFile() { fileInput.click(); }
 
 function handleFileSelect(e) {
   const file = e.target.files[0];
+  fileInput.value = '';
   if (!file) return;
+  if (!confirmDiscard()) return;
   const reader = new FileReader();
   reader.onload = function(ev) {
     editor.value = ev.target.result;
+    markSaved();
     editor.focus();
     onEditorInput();
     showToast('已加载: ' + file.name);
   };
   reader.readAsText(file);
-  fileInput.value = '';
 }
 
 function handleDragOver(e) {
@@ -742,9 +876,11 @@ function handleDrop(e) {
   const file = e.dataTransfer.files[0];
   if (!file) return;
   if (file.name.endsWith('.md') || file.name.endsWith('.markdown') || file.name.endsWith('.txt')) {
+    if (!confirmDiscard()) return;
     const reader = new FileReader();
     reader.onload = function(ev) {
       editor.value = ev.target.result;
+      markSaved();
       editor.focus();
       onEditorInput();
       showToast('已加载: ' + file.name);
@@ -766,6 +902,7 @@ function exportFile() {
   a.download = `markdown-${dateStr}.md`;
   a.click();
   URL.revokeObjectURL(url);
+  markSaved();
   showToast('导出成功');
 }
 
@@ -776,7 +913,8 @@ function toggleTheme() {
   document.getElementById('hljs-light').disabled = isDark;
   document.getElementById('hljs-dark').disabled = !isDark;
   try { localStorage.setItem('md-editor-theme', isDark ? 'dark' : 'light'); } catch(e) {}
-  updatePreview(); // 重新渲染以更新代码高亮主题
+  initMermaid();
+  updatePreview(); // 重新渲染以更新代码高亮与图表主题
 }
 
 // === 阅读模式 ===
@@ -850,6 +988,10 @@ document.addEventListener('keydown', function(e) {
         e.preventDefault();
         insertLink();
         break;
+      case 'n':
+        e.preventDefault();
+        newFile();
+        break;
     }
   }
   // Esc 关闭侧边栏或退出阅读模式
@@ -865,6 +1007,13 @@ document.addEventListener('keydown', function(e) {
   }
 });
 
+// 有未保存修改时离开页面给出提示
+window.addEventListener('beforeunload', function(e) {
+  if (!isDirty()) return;
+  e.preventDefault();
+  e.returnValue = '';
+});
+
 // === 恢复主题和内容 ===
 (function() {
   const savedTheme = localStorage.getItem('md-editor-theme');
@@ -877,6 +1026,8 @@ document.addEventListener('keydown', function(e) {
   if (savedContent) {
     editor.value = savedContent;
   }
+  // 恢复的内容视为已保存状态
+  markSaved();
   // 恢复阅读模式
   const savedReadingMode = localStorage.getItem('md-editor-reading-mode');
   if (savedReadingMode === '1') {
